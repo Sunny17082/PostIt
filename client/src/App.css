@@ -1,4 +1,4 @@
-*{
+* {
 	box-sizing: border-box;
 }
 
@@ -11,7 +11,7 @@ main {
 header {
 	display: flex;
 	justify-content: space-between;
-	margin-bottom: 50px;
+	margin-bottom: 30px;
 	align-items: center;
 	margin-top: 20px;
 }
@@ -92,7 +92,7 @@ input {
 	background-color: #eee;
 }
 
-button {
+.btn  {
 	width: 100%;
 	display: block;
 	background-color: #555;
