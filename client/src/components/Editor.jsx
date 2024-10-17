@@ -29,5 +29,4 @@ const Editor = ({value, onChange}) => {
         <ReactQuill value={value} onChange={onChange} modules={modules} formats={formats}/>
     )
 }
-
 export default Editor

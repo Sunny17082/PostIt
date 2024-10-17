@@ -1,35 +1,44 @@
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const Post = require("../models/post.model");
+const User = require("../models/user.model");
 
-const fs = require("fs"); 
+const { uploadOnCloudinary } = require("../utils/cloudinary");
 
-const salt = bcrypt.genSaltSync(10);
+const secret = process.env.JWT_SECRET;
 
-const secret = "fuhcgiuhqb4e8b48e494n94s9b26326@%%^&#%#Y#FY#GJJ#J#";
+const tagOptions = ["Code", "Web", "MERN", "SQL", "Other"];
 
-const tagOptions = ["Code", "Web", "MERN", "COBOL", "Other"];
+const getUserIdFromToken = (req) => {
+	const { token } = req.cookies;
+	if (!token) return null;
+	try {
+		const user = jwt.verify(token, secret);
+		return user.id;
+	} catch (err) {
+		return null;
+	}
+};
 
 const handleAddPost = async (req, res) => {
-	const { originalname, path } = req.file;
-	const parts = originalname.split(".");
-	const ext = parts[parts.length - 1];
-	const newPath = path + "." + ext;
-	fs.renameSync(path, newPath);
+	let newFile;
+	if (req.files && req.files.file) {
+		const fileImage = await uploadOnCloudinary(req.files.file[0].path);
+		newFile = fileImage.url;
+	}
 
 	const { token } = req.cookies;
 	jwt.verify(token, secret, {}, async (err, info) => {
 		if (err) throw err;
-		const { title, summary, content, postTags } = req.body;
+		const { title, summary, content, postTags, coverImageURL } = req.body;
 		const postDoc = await Post.create({
 			title,
 			summary,
 			content,
-			postTags: postTags.split(","),
-			cover: newPath,
+			postTags: postTags?.split(","),
+			cover: coverImageURL ? coverImageURL : newFile,
 			author: info.id,
 		});
-		res.json(postDoc);
+		res.status(200).json(postDoc);
 	});
 };
 
@@ -39,61 +48,112 @@ const handleGetPosts = async (req, res) => {
 	const search = req.query.search || "";
 	const sort = parseInt(req.query.sort) || -1;
 	let tagPost = req.query.tagPost || "All";
-	
-	tagPost = tagPost === "All" ? [...tagOptions] : req.query.tagPost.split(",");
+	const following = req.query.following || false;
 
-	const query = { title: { $regex: search, $options: "i" } };
-	const total = await Post.countDocuments(query)
-		.where("postTags")
-		.in([...tagPost]);
-	
-	const postDoc = await Post.find(query)
-		.populate("author", ["username"])
-		.where("postTags")
-		.in([...tagPost])
-		.sort({ createdAt: sort })
-		.limit(page_size)
-		.skip(page_size * page);
-	res.json({
-		totalPages: Math.ceil(total / page_size),
-		postDoc,
+	tagPost =
+		tagPost === "All" ? [...tagOptions] : req.query.tagPost.split(",");
+
+	const query = {
+		title: { $regex: search, $options: "i" },
+	};
+
+	try {
+		const userId = getUserIdFromToken(req);
+		if (!userId && following === "true") {
+			return res.json({
+				totalPages: 0,
+				postDoc: [],
+			});
+		}
+
+		if (userId) {
+			const user = await User.findById(userId);
+			if (user) {
+				if (following === "true" && user.following.length === 0) {
+					return res.json({
+						totalPages: 0,
+						postDoc: [],
+					});
+				}
+				if (following === "true" && user.following.length > 0) {
+					query.author = { $in: [...user.following, userId] };
+				}
+			}
+		}
+
+		const total = await Post.countDocuments(query)
+			.where("postTags")
+			.in([...tagPost]);
+
+		const postDoc = await Post.find(query)
+			.populate("author", ["_id", "username", "name"])
+			.where("postTags")
+			.in([...tagPost])
+			.sort({ createdAt: sort })
+			.limit(page_size)
+			.skip(page_size * page);
+		res.json({
+			totalPages: Math.ceil(total / page_size),
+			postDoc,
+		});
+	} catch (err) {
+		console.log(err);
+		res.status(500).json(err);
+	}
+};
+
+const handleGetPostsByProfileId = async (req, res) => {
+	const profileId = req.params.id;
+	const author = await User.findById(profileId).select("-password");
+	const postDoc = await Post.find({ author: profileId }).sort({
+		createdAt: -1,
 	});
+	res.json({ author, postDoc });
 };
 
 const handleGetPostById = async (req, res) => {
 	const { id } = req.params;
-	const postDoc = await Post.findById(id).populate("author", ["username"]);
+	const postDoc = await Post.findById(id)
+		.populate("author", ["_id", "username", "name"])
+		.populate("comments.user", [
+			"_id",
+			"username",
+			"name",
+			"profileImg",
+			"followers",
+		]);
 	res.json(postDoc);
 };
 
 const handleUpdatePost = async (req, res) => {
-	let newPath = null;
-	if (req.file) {
-		const { originalname, path } = req.file;
-		const parts = originalname.split(".");
-		const ext = parts[parts.length - 1];
-		newPath = path + "." + ext;
-		fs.renameSync(path, newPath);
+	let newFile;
+	if (req.files && req.files.file) {
+		const fileImage = await uploadOnCloudinary(req.files.file[0].path);
+		newFile = fileImage.url;
 	}
 
 	const { token } = req.cookies;
+
 	jwt.verify(token, secret, {}, async (err, info) => {
 		if (err) throw err;
-		const { id, title, summary, content, postTags } = req.body;
+		const { id, title, summary, content, postTags, coverImageURL } = req.body;
 		const postDoc = await Post.findById(id);
 		const isAuthor =
 			JSON.stringify(postDoc.author) === JSON.stringify(info.id);
 		if (!isAuthor) {
 			res.status(400).json("you are not an author");
 		}
+		if (coverImageURL) {
+			newFile = coverImageURL;
+		}
 		await postDoc.updateOne({
 			title,
 			summary,
 			content,
 			postTags: postTags.split(","),
-			cover: newPath ? newPath : postDoc.cover,
+			cover: newFile ? newFile : postDoc.cover,
 		});
-		res.json(postDoc);
+		res.status(200).json(postDoc);
 	});
 };
 
@@ -110,10 +170,112 @@ const handleDeletePost = async (req, res) => {
 	}
 };
 
+const handleAddComment = (req, res) => {
+	const { id } = req.params;
+	const { content } = req.body;
+	const { token } = req.cookies;
+
+	jwt.verify(token, secret, {}, async (err, user) => {
+		if (err) throw err;
+		try {
+			const postDoc = await Post.findById(id);
+			postDoc.comments.push({
+				user: user.id,
+				content,
+			});
+			await postDoc.save();
+			res.status(200).json(postDoc);
+		} catch (err) {
+			res.status(500).json(err);
+		}
+	});
+};
+
+const handleToggleLike = (req, res) => {
+	const { id } = req.params;
+	const { token } = req.cookies;
+
+	jwt.verify(token, secret, {}, async (err, user) => {
+		if (err) throw err;
+		try {
+			const postDoc = await Post.findById(id);
+			const userIndex = postDoc.likes.indexOf(user.id);
+			if (userIndex === -1) {
+				postDoc.likes.push(user.id);
+			} else {
+				postDoc.likes.splice(userIndex, 1);
+			}
+			await postDoc.save();
+			res.json(postDoc);
+		} catch (err) {
+			res.json(err);
+		}
+	});
+};
+
+const handleIncrementViews = async (req, res) => {
+	const { id } = req.params;
+	try {
+		const postDoc = await Post.findById(id);
+		postDoc.views += 1;
+		await postDoc.save();
+		res.json(postDoc);
+	} catch (err) {
+		res.json(err);
+	}
+};
+
+const handleUpdateComment = (req, res) => {
+	const { id, commentId } = req.params;
+	const { content } = req.body;
+	const { token } = req.cookies;
+
+	jwt.verify(token, secret, {}, async (err, user) => {
+		if (err) throw err;
+		try {
+			const postDoc = await Post.findById(id);
+			const comment = postDoc.comments.id(commentId);
+
+			comment.content = content;
+			await postDoc.save();
+			res.json(postDoc);
+		} catch (err) {
+			res.json(err);
+		}
+	});
+};
+
+const handleDeleteComment = (req, res) => {
+	const { id, commentId } = req.params;
+	const { token } = req.cookies;
+
+	jwt.verify(token, secret, {}, async (err, user) => {
+		if (err) throw err;
+		try {
+			const postDoc = await Post.findById(id);
+			const comment = postDoc.comments.id(commentId);
+			const commentIndex = postDoc.comments.indexOf(comment);
+			postDoc.comments.splice(commentIndex, 1);
+			await postDoc.save();
+			console.log(postDoc);
+			res.json(postDoc);
+		} catch (err) {
+			console.log(err);
+			res.json(err);
+		}
+	});
+};
+
 module.exports = {
-    handleAddPost,
-    handleGetPosts,
-    handleGetPostById,
-    handleUpdatePost,
-    handleDeletePost
-}
+	handleAddPost,
+	handleGetPosts,
+	handleGetPostById,
+	handleUpdatePost,
+	handleDeletePost,
+	handleAddComment,
+	handleUpdateComment,
+	handleDeleteComment,
+	handleToggleLike,
+	handleIncrementViews,
+	handleGetPostsByProfileId,
+};
